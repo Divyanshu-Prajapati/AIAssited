@@ -2,6 +2,9 @@ import { QuestionSpecification } from '../../types/QuestionSpecification.js';
 import { GENERIC_JAVA_STARTER } from '../questionBank.js';
 
 export const arr01Spec: QuestionSpecification = {
+  specificationStatus: 'VALIDATED',
+  specificationVersion: 1,
+
   problem: {
     id: 'arr_01',
     title: 'Warehouse Shipment Net Adjustment',
@@ -135,38 +138,21 @@ export const arr01Spec: QuestionSpecification = {
             'update overall max sum',
             'best subarray ending at current position',
             'global best sum',
+            'evaluate all pairs',
+            'all pairs [i..j]',
+            'nested loops',
           ],
         },
         {
           id: 'req_p2',
-          description: 'Specifies O(N) time and O(1) space complexity bounds',
+          description: 'Specifies time and space complexity bounds',
           critical: true,
           category: 'Complexity',
-          concepts: ['linear time', 'constant space'],
-          acceptableEvidence: ['O(N) time complexity', 'O(1) extra space', 'single linear pass'],
+          concepts: ['time complexity', 'space complexity', 'linear time', 'quadratic time', 'constant space'],
+          acceptableEvidence: ['O(N) time complexity', 'O(N^2) time complexity', 'O(1) extra space', 'single linear pass', 'nested loops', 'quadratic time'],
         },
       ],
-      acceptedApproaches: [
-        {
-          id: 'kadane_linear_scan',
-          name: 'Linear Scan with Running Maximum Subarray Sum',
-          description: 'Single pass maintaining best sum ending at current element and overall global maximum.',
-          correctness: 'CORRECT',
-          optimal: true,
-          timeComplexity: 'O(N)',
-          spaceComplexity: 'O(1)',
-          concepts: [
-            'best subarray ending at current position',
-            'global best sum',
-            'reset running sum when negative',
-            'maximum contiguous sum',
-          ],
-          correctnessConditions: [
-            'Updates current max sum using max(arr[i], currentMax + arr[i])',
-            'Tracks global max sum across all iterations',
-          ],
-        },
-      ],
+      acceptedApproaches: ['kadane_linear_scan', 'brute_force_subarrays'],
       complexity: {
         expectedTime: 'O(N)',
         expectedSpace: 'O(1)',

@@ -1,8 +1,9 @@
 import { prisma } from '../database/db.js';
-import { QUESTION_BANK } from './questionBank.js';
+import { problemRegistry } from '../problems/index.js';
+import { validateQuestionSpecification } from '../validation/QuestionSpecificationValidator.js';
 
 async function seed() {
-  console.log('🌱 Seeding DSA AI Assessment Lab Database...');
+  console.log('🌱 Seeding DSA AI Assessment Lab Database from ProblemRegistry...');
 
   // 1. Create Default User
   const defaultUser = await prisma.user.upsert({
@@ -49,59 +50,85 @@ async function seed() {
 
   console.log(`👤 User created/verified: ${defaultUser.name} (${defaultUser.id})`);
 
-  // 2. Seed Questions
+  // 2. Validate ProblemRegistry integrity before seeding
+  const regVal = problemRegistry.validateRegistry();
+  if (!regVal.valid) {
+    console.error('❌ ProblemRegistry validation failed:', regVal.errors);
+    throw new Error('Seed process aborted: ProblemRegistry validation failed.');
+  }
+
+  // 3. Seed Questions from ProblemRegistry
+  const modules = problemRegistry.getAll();
   let count = 0;
-  for (const q of QUESTION_BANK) {
+
+  for (const mod of modules) {
+    const spec = mod.specification;
+    const p = spec.problem;
+
+    const valRes = validateQuestionSpecification(spec);
+    if (!valRes.valid) {
+      console.error(`❌ Specification error in question '${p.id}':`, valRes.errors);
+      throw new Error(`Seed process aborted: Question '${p.id}' specification is invalid.`);
+    }
+
+    const specJson = JSON.stringify(spec);
+
     await prisma.question.upsert({
-      where: { id: q.id },
+      where: { id: p.id },
       update: {
-        title: q.title,
-        story: q.story,
-        problemStatement: q.problemStatement,
-        inputFormat: q.inputFormat,
-        outputFormat: q.outputFormat,
-        constraints: q.constraints,
-        examples: JSON.stringify(q.examples),
-        difficulty: q.difficulty,
-        topic: q.topic,
-        pattern: q.pattern,
-        expectedTimeComplexity: q.expectedTimeComplexity,
-        expectedSpaceComplexity: q.expectedSpaceComplexity,
-        timeLimit: q.timeLimit,
-        memoryLimit: q.memoryLimit,
-        starterCode: q.starterCode,
-        visibleTests: JSON.stringify(q.visibleTests),
-        hiddenTests: JSON.stringify(q.hiddenTests),
-        edgeCases: JSON.stringify(q.edgeCases),
-        tags: JSON.stringify(q.tags),
+        title: p.title,
+        story: p.story || '',
+        problemStatement: p.problemStatement,
+        inputFormat: p.inputFormat,
+        outputFormat: p.outputFormat,
+        constraints: Array.isArray(p.constraints) ? p.constraints.join('\n') : p.constraints,
+        examples: JSON.stringify(p.examples),
+        difficulty: p.difficulty,
+        topic: p.topic,
+        pattern: p.pattern,
+        expectedTimeComplexity: p.expectedTimeComplexity,
+        expectedSpaceComplexity: p.expectedSpaceComplexity,
+        timeLimit: 2000,
+        memoryLimit: 256,
+        starterCode: spec.starterCode,
+        visibleTests: JSON.stringify(spec.tests.visible),
+        hiddenTests: JSON.stringify(spec.tests.hidden),
+        edgeCases: JSON.stringify(spec.tests.edge),
+        tags: JSON.stringify([p.topic, p.pattern]),
+        specification: specJson,
+        specificationStatus: 'VALIDATED',
+        specificationVersion: 1,
       },
       create: {
-        id: q.id,
-        title: q.title,
-        story: q.story,
-        problemStatement: q.problemStatement,
-        inputFormat: q.inputFormat,
-        outputFormat: q.outputFormat,
-        constraints: q.constraints,
-        examples: JSON.stringify(q.examples),
-        difficulty: q.difficulty,
-        topic: q.topic,
-        pattern: q.pattern,
-        expectedTimeComplexity: q.expectedTimeComplexity,
-        expectedSpaceComplexity: q.expectedSpaceComplexity,
-        timeLimit: q.timeLimit,
-        memoryLimit: q.memoryLimit,
-        starterCode: q.starterCode,
-        visibleTests: JSON.stringify(q.visibleTests),
-        hiddenTests: JSON.stringify(q.hiddenTests),
-        edgeCases: JSON.stringify(q.edgeCases),
-        tags: JSON.stringify(q.tags),
+        id: p.id,
+        title: p.title,
+        story: p.story || '',
+        problemStatement: p.problemStatement,
+        inputFormat: p.inputFormat,
+        outputFormat: p.outputFormat,
+        constraints: Array.isArray(p.constraints) ? p.constraints.join('\n') : p.constraints,
+        examples: JSON.stringify(p.examples),
+        difficulty: p.difficulty,
+        topic: p.topic,
+        pattern: p.pattern,
+        expectedTimeComplexity: p.expectedTimeComplexity,
+        expectedSpaceComplexity: p.expectedSpaceComplexity,
+        timeLimit: 2000,
+        memoryLimit: 256,
+        starterCode: spec.starterCode,
+        visibleTests: JSON.stringify(spec.tests.visible),
+        hiddenTests: JSON.stringify(spec.tests.hidden),
+        edgeCases: JSON.stringify(spec.tests.edge),
+        tags: JSON.stringify([p.topic, p.pattern]),
+        specification: specJson,
+        specificationStatus: 'VALIDATED',
+        specificationVersion: 1,
       },
     });
     count++;
   }
 
-  console.log(`✅ Successfully seeded ${count} story-based questions into database.`);
+  console.log(`✅ Successfully seeded ${count} VALIDATED problem specifications into database.`);
 }
 
 seed()
@@ -112,3 +139,4 @@ seed()
   .finally(async () => {
     await prisma.$disconnect();
   });
+

@@ -1,7 +1,8 @@
-import { QuestionData, AIResponse, PromptQualityAnalysis, ExecutionResult } from '../../types/index.js';
+import { QuestionData, AIResponse, PromptQualityAnalysis, ExecutionResult, QuestionSpecification } from '../../types/index.js';
 
 export interface AIContext {
   question: QuestionData;
+  specification?: QuestionSpecification;
   phase: string;
   userPrompt?: string;
   userPlan?: string;
@@ -11,6 +12,7 @@ export interface AIContext {
   hintsUsed?: number;
   conversationHistory?: { role: 'user' | 'assistant'; text: string }[];
 }
+
 
 export interface AIProvider {
   name: string;

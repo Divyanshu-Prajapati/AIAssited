@@ -19,6 +19,18 @@ export interface QuestionValidationResult {
   warnings: ValidationWarning[];
 }
 
+export function normalizeComplexity(comp?: string): string {
+  if (!comp) return '';
+  return comp
+    .toUpperCase()
+    .replace(/\s+/g, '')
+    .replace(/\*+/g, '')
+    .replace(/\^/g, '')
+    .replace(/O\(N1\)/g, 'O(N)')
+    .replace(/O\(NLOGN\)/g, 'O(NLOGN)')
+    .replace(/O\(N2\)/g, 'O(N^2)');
+}
+
 export function validateQuestionSpecification(question: any): QuestionValidationResult {
   const errors: ValidationError[] = [];
   const warnings: ValidationWarning[] = [];
@@ -46,43 +58,131 @@ export function validateQuestionSpecification(question: any): QuestionValidation
 
   const spec = question as Partial<QuestionSpecification>;
 
-  // 2. Rule 1: No accepted approach exists
-  if (!spec.acceptedApproaches || !Array.isArray(spec.acceptedApproaches) || spec.acceptedApproaches.length === 0) {
+  // Check specificationStatus
+  if (spec.specificationStatus !== 'VALIDATED') {
+    errors.push({
+      field: 'specificationStatus',
+      code: 'UNVALIDATED_SPECIFICATION',
+      message: `Specification status '${spec.specificationStatus || 'UNKNOWN'}' is not VALIDATED`,
+    });
+  }
+
+  // Check starter code (Rule 9)
+  if (!spec.starterCode || typeof spec.starterCode !== 'string' || spec.starterCode.trim() === '') {
+    errors.push({
+      field: 'starterCode',
+      code: 'EMPTY_STARTER_CODE',
+      message: 'Starter code cannot be empty',
+    });
+  }
+
+  // Top-level Accepted Approaches check (Rule 1, 3, 4, 5, 6)
+  const approaches = spec.acceptedApproaches || [];
+  const approachMap = new Map<string, any>();
+  const approachIds = new Set<string>();
+
+  if (!approaches || !Array.isArray(approaches) || approaches.length === 0) {
     errors.push({
       field: 'acceptedApproaches',
       code: 'MISSING_ACCEPTED_APPROACH',
       message: 'Question must have at least one accepted approach',
     });
   } else {
-    // Rule 9: An accepted approach has no correctness conditions
-    spec.acceptedApproaches.forEach((app, idx) => {
+    let hasOptimal = false;
+
+    approaches.forEach((app, idx) => {
+      if (approachIds.has(app.id)) {
+        errors.push({
+          field: `acceptedApproaches[${idx}].id`,
+          code: 'DUPLICATE_APPROACH_ID',
+          message: `Duplicate approach ID '${app.id}' found`,
+        });
+      }
+      approachIds.add(app.id);
+      approachMap.set(app.id, app);
+
+      if (app.optimal === true) {
+        hasOptimal = true;
+      } else {
+        // Rule 4: Correct-but-inefficient explicitly marked
+        if (app.correctness !== 'CORRECT') {
+          errors.push({
+            field: `acceptedApproaches[${idx}].correctness`,
+            code: 'INVALID_CORRECTNESS_MARKING',
+            message: `Approach '${app.id}' must be marked correctness: CORRECT`,
+          });
+        }
+      }
+
+      // Check correctness conditions
       if (!app.correctnessConditions || !Array.isArray(app.correctnessConditions) || app.correctnessConditions.length === 0) {
         errors.push({
           field: `acceptedApproaches[${idx}].correctnessConditions`,
           code: 'MISSING_CORRECTNESS_CONDITIONS',
-          message: `Accepted approach '${app.name || app.id || idx}' must specify at least one correctness condition`,
+          message: `Accepted approach '${app.id}' must specify at least one correctness condition`,
         });
       }
     });
 
-    // Warning: No optimal approach flagged
-    const hasOptimal = spec.acceptedApproaches.some((app) => app.optimal === true);
+    // Rule 3: At least one accepted approach is optimal
     if (!hasOptimal) {
-      warnings.push({
+      errors.push({
         field: 'acceptedApproaches',
         code: 'NO_OPTIMAL_APPROACH_FLAGGED',
-        message: 'None of the accepted approaches are flagged as optimal',
+        message: 'At least one accepted approach must be flagged as optimal: true',
       });
+    }
+
+    // Rule 5 & 6: Complexity contract alignment
+    const expectedTimeNorm = normalizeComplexity(spec.problem?.expectedTimeComplexity);
+    const expectedSpaceNorm = normalizeComplexity(spec.problem?.expectedSpaceComplexity);
+
+    const optimalApproaches = approaches.filter((a) => a.optimal === true);
+    if (optimalApproaches.length > 0) {
+      const matchesOptimalTime = optimalApproaches.some(
+        (a) => normalizeComplexity(a.timeComplexity) === expectedTimeNorm
+      );
+      if (!matchesOptimalTime) {
+        errors.push({
+          field: 'problem.expectedTimeComplexity',
+          code: 'CLAIMED_COMPLEXITY_CONTRADICTION',
+          message: `Expected time complexity '${spec.problem?.expectedTimeComplexity}' does not match any optimal approach time complexity`,
+        });
+      }
+
+      const matchesOptimalSpace = optimalApproaches.some(
+        (a) => normalizeComplexity(a.spaceComplexity) === expectedSpaceNorm
+      );
+      if (!matchesOptimalSpace) {
+        errors.push({
+          field: 'problem.expectedSpaceComplexity',
+          code: 'OPTIMAL_APPROACH_COMPLEXITY_MISMATCH',
+          message: `Expected space complexity '${spec.problem?.expectedSpaceComplexity}' does not match any optimal approach space complexity`,
+        });
+      }
     }
   }
 
-  // 3. Rule 2, 3, 4: Critical Step requirements check
+  // Check Plan accepted approaches match top-level IDs (Rule 2)
+  const planApproachIds = spec.validation?.plan?.acceptedApproaches || [];
+  if (Array.isArray(planApproachIds)) {
+    planApproachIds.forEach((planAppId, idx) => {
+      if (!approachIds.has(planAppId)) {
+        errors.push({
+          field: `validation.plan.acceptedApproaches[${idx}]`,
+          code: 'INVALID_PLAN_APPROACH_ID',
+          message: `Plan contract refers to nonexistent approach ID '${planAppId}'`,
+        });
+      }
+    });
+  }
+
+  // Check Step 1, 2, 3 requirements (Rule 2, 3, 4, 15, 16, 17)
   const step1Reqs = spec.validation?.understanding?.requirements || [];
   const step2Reqs = spec.validation?.plan?.requirements || [];
   const step3Reqs = spec.validation?.implementation?.requirements || [];
 
-  const hasStep1Critical = step1Reqs.some((r) => r.critical === true);
-  if (!hasStep1Critical) {
+  if (!step1Reqs.some((r) => r.critical === true)) {
     errors.push({
       field: 'validation.understanding.requirements',
       code: 'MISSING_STEP1_CRITICAL_REQUIREMENT',
@@ -90,8 +190,7 @@ export function validateQuestionSpecification(question: any): QuestionValidation
     });
   }
 
-  const hasStep2Critical = step2Reqs.some((r) => r.critical === true);
-  if (!hasStep2Critical) {
+  if (!step2Reqs.some((r) => r.critical === true)) {
     errors.push({
       field: 'validation.plan.requirements',
       code: 'MISSING_STEP2_CRITICAL_REQUIREMENT',
@@ -99,8 +198,7 @@ export function validateQuestionSpecification(question: any): QuestionValidation
     });
   }
 
-  const hasStep3Critical = step3Reqs.some((r) => r.critical === true);
-  if (!hasStep3Critical) {
+  if (!step3Reqs.some((r) => r.critical === true)) {
     errors.push({
       field: 'validation.implementation.requirements',
       code: 'MISSING_STEP3_CRITICAL_REQUIREMENT',
@@ -108,60 +206,126 @@ export function validateQuestionSpecification(question: any): QuestionValidation
     });
   }
 
-  // Rule 10: A validation requirement has no semantic concepts
-  const allRequirements = [...step1Reqs, ...step2Reqs, ...step3Reqs];
-  allRequirements.forEach((req) => {
+  // Rule 14: Prohibited misunderstandings
+  const prohibited = spec.validation?.understanding?.prohibitedMisunderstandings || [];
+  if (!Array.isArray(prohibited) || prohibited.length === 0) {
+    errors.push({
+      field: 'validation.understanding.prohibitedMisunderstandings',
+      code: 'MISSING_PROHIBITED_MISUNDERSTANDINGS',
+      message: 'Understanding contract must contain at least one prohibited misunderstanding',
+    });
+  }
+
+  // Rule 15 & 16 & 17: Requirement semantic concepts, acceptable evidence, empty critical check
+  const allReqs = [...step1Reqs, ...step2Reqs, ...step3Reqs];
+  const reqIds = new Set<string>();
+
+  allReqs.forEach((req) => {
+    if (req.id && reqIds.has(req.id)) {
+      errors.push({
+        field: `requirement[${req.id}].id`,
+        code: 'DUPLICATE_REQUIREMENT_ID',
+        message: `Duplicate requirement ID '${req.id}' found`,
+      });
+    }
+    if (req.id) reqIds.add(req.id);
+
     if (!req.concepts || !Array.isArray(req.concepts) || req.concepts.length === 0) {
       errors.push({
         field: `requirement[${req.id || 'unknown'}].concepts`,
         code: 'MISSING_SEMANTIC_CONCEPTS',
-        message: `Validation requirement '${req.description || req.id}' has no semantic concepts defined`,
+        message: `Validation requirement '${req.id}' must specify semantic concepts`,
+      });
+    }
+
+    if (!req.acceptableEvidence || !Array.isArray(req.acceptableEvidence) || req.acceptableEvidence.length === 0) {
+      errors.push({
+        field: `requirement[${req.id || 'unknown'}].acceptableEvidence`,
+        code: 'MISSING_ACCEPTABLE_EVIDENCE',
+        message: `Validation requirement '${req.id}' must specify acceptable evidence`,
+      });
+    }
+
+    if (req.critical && (!req.description || req.description.trim() === '')) {
+      errors.push({
+        field: `requirement[${req.id || 'unknown'}].description`,
+        code: 'EMPTY_CRITICAL_REQUIREMENTS',
+        message: `Critical requirement '${req.id}' description cannot be empty`,
       });
     }
   });
 
-  // 4. Rule 5 & 6: Expected time & space complexity missing
-  const probTime = spec.problem?.expectedTimeComplexity;
-  if (!probTime || typeof probTime !== 'string' || probTime.trim() === '') {
+  // Reference Solutions Check (Rule 7, 8, 12)
+  const refSolutions = spec.referenceSolutions || [];
+  if (!Array.isArray(refSolutions) || refSolutions.length === 0) {
     errors.push({
-      field: 'problem.expectedTimeComplexity',
-      code: 'MISSING_EXPECTED_TIME_COMPLEXITY',
-      message: 'Problem definition must specify expectedTimeComplexity',
+      field: 'referenceSolutions',
+      code: 'MISSING_REFERENCE_SOLUTION',
+      message: 'Question must specify at least one reference solution',
+    });
+  } else {
+    refSolutions.forEach((ref, idx) => {
+      if (!approachIds.has(ref.approachId)) {
+        errors.push({
+          field: `referenceSolutions[${idx}].approachId`,
+          code: 'INVALID_REFERENCE_APPROACH_ID',
+          message: `Reference solution refers to nonexistent approach ID '${ref.approachId}'`,
+        });
+      } else {
+        const app = approachMap.get(ref.approachId);
+        if (app) {
+          if (normalizeComplexity(ref.timeComplexity) !== normalizeComplexity(app.timeComplexity)) {
+            errors.push({
+              field: `referenceSolutions[${idx}].timeComplexity`,
+              code: 'REFERENCE_SOLUTION_COMPLEXITY_MISMATCH',
+              message: `Reference solution time complexity '${ref.timeComplexity}' does not match approach '${app.id}' time complexity '${app.timeComplexity}'`,
+            });
+          }
+        }
+      }
+
+      if (!ref.javaCode || typeof ref.javaCode !== 'string' || ref.javaCode.trim() === '') {
+        errors.push({
+          field: `referenceSolutions[${idx}].javaCode`,
+          code: 'EMPTY_REFERENCE_SOLUTION_CODE',
+          message: `Reference solution '${ref.approachId}' Java code cannot be empty`,
+        });
+      }
     });
   }
 
-  const probSpace = spec.problem?.expectedSpaceComplexity;
-  if (!probSpace || typeof probSpace !== 'string' || probSpace.trim() === '') {
-    errors.push({
-      field: 'problem.expectedSpaceComplexity',
-      code: 'MISSING_EXPECTED_SPACE_COMPLEXITY',
-      message: 'Problem definition must specify expectedSpaceComplexity',
-    });
-  }
-
-  // 5. Rule 7: No tests exist
+  // Test Suite Checks (Rule 10, 11, 12, 13)
   const tests = spec.tests;
   const exampleTests = tests?.examples || [];
   const visibleTests = tests?.visible || [];
   const hiddenTests = tests?.hidden || [];
   const edgeTests = tests?.edge || [];
-  const totalTests = exampleTests.length + visibleTests.length + hiddenTests.length + edgeTests.length;
 
-  if (totalTests === 0) {
+  const allTests = [...exampleTests, ...visibleTests, ...hiddenTests, ...edgeTests];
+  const testIds = new Set<string>();
+
+  if (allTests.length === 0) {
     errors.push({
       field: 'tests',
       code: 'MISSING_TESTS',
-      message: 'Question must have at least one test case across examples, visible, hidden, or edge suites',
+      message: 'Question test suite cannot be empty',
     });
   } else {
-    // Rule 13: Test empty input or output
-    const allTestsList = [...exampleTests, ...visibleTests, ...hiddenTests, ...edgeTests];
-    allTestsList.forEach((t) => {
+    allTests.forEach((t) => {
+      if (testIds.has(t.id)) {
+        errors.push({
+          field: `tests[${t.id}]`,
+          code: 'DUPLICATE_TEST_ID',
+          message: `Duplicate test ID '${t.id}' found across test suite`,
+        });
+      }
+      testIds.add(t.id);
+
       if (t.input === undefined || t.input === null || t.expectedOutput === undefined || t.expectedOutput === null) {
         errors.push({
-          field: `tests[${t.id || 'unknown'}]`,
+          field: `tests[${t.id}]`,
           code: 'EMPTY_TEST_INPUT_OR_OUTPUT',
-          message: `Test case '${t.id}' has undefined/null input or expectedOutput`,
+          message: `Test '${t.id}' input or expectedOutput cannot be undefined/null`,
         });
       }
     });
@@ -175,44 +339,23 @@ export function validateQuestionSpecification(question: any): QuestionValidation
     }
   }
 
-  // 6. Rule 8: No reference solution exists
-  if (!spec.referenceSolutions || !Array.isArray(spec.referenceSolutions) || spec.referenceSolutions.length === 0) {
+  // Rule 12: Examples must have corresponding test cases
+  const problemExamples = spec.problem?.examples || [];
+  if (problemExamples.length > 0 && exampleTests.length === 0) {
     errors.push({
-      field: 'referenceSolutions',
-      code: 'MISSING_REFERENCE_SOLUTION',
-      message: 'Question must have at least one reference solution',
-    });
-  } else {
-    // Rule 12: Reference solution refers to a nonexistent approachId
-    const validApproachIds = new Set((spec.acceptedApproaches || []).map((a) => a.id));
-    spec.referenceSolutions.forEach((ref, idx) => {
-      if (!validApproachIds.has(ref.approachId)) {
-        errors.push({
-          field: `referenceSolutions[${idx}].approachId`,
-          code: 'INVALID_REFERENCE_APPROACH_ID',
-          message: `Reference solution '${ref.approachId}' refers to a nonexistent accepted approachId`,
-        });
-      }
+      field: 'tests.examples',
+      code: 'EXAMPLE_MISSING_TEST_CASE',
+      message: 'Problem defines examples but tests.examples is empty',
     });
   }
 
-  // 7. Rule 11: A question has no meaningful edge case requirement
-  const edgeCases = spec.problem?.edgeCases || [];
-  const minEdgeCases = spec.validation?.understanding?.minimumEdgeCases || 0;
-  if (edgeCases.length === 0 && edgeTests.length === 0 && minEdgeCases === 0) {
+  // Rule 13: Edge cases must be represented by actual executable tests
+  const problemEdgeCases = spec.problem?.edgeCases || [];
+  if (problemEdgeCases.length > 0 && edgeTests.length === 0) {
     errors.push({
-      field: 'problem.edgeCases',
-      code: 'MISSING_EDGE_CASE_REQUIREMENT',
-      message: 'Question must define meaningful edge cases in problem.edgeCases or tests.edge',
-    });
-  }
-
-  // 8. Rule 14: Contradictory core metadata
-  if (spec.problem?.difficulty === 'EASY' && spec.problem?.expectedTimeComplexity?.includes('O(N!)')) {
-    errors.push({
-      field: 'problem.difficulty',
-      code: 'CONTRADICTORY_METADATA',
-      message: 'Problem claims EASY difficulty but has O(N!) factorial complexity',
+      field: 'tests.edge',
+      code: 'EDGE_CASE_MISSING_TEST_CASE',
+      message: 'Problem defines edge cases but tests.edge test suite is empty',
     });
   }
 

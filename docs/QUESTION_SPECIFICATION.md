@@ -1,6 +1,6 @@
 # 📖 Question Specification Data Contract Architecture
 
-## 1. Why the Specification Exists
+## 1. Executive Summary & Authoritative Source of Truth
 
 The **DSA AI Assessment Lab** is designed to evaluate a candidate's problem-solving workflow across 6 structured steps:
 1. **Understand**
@@ -12,95 +12,146 @@ The **DSA AI Assessment Lab** is designed to evaluate a candidate's problem-solv
 
 A generic chatbot or simple test runner cannot determine whether a candidate truly understands a problem or whether their plan matches their implementation. To perform reliable, objective AI assessment evaluation without relying on rigid keyword matching, each DSA problem requires a strongly typed **Question Specification Data Contract** (`QuestionSpecification.ts`).
 
----
-
-## 2. Problem Definition (`ProblemDefinition`)
-
-Describes the core narrative, problem statement, input/output formats, constraints, examples, and edge case scenarios:
-
-- **`id` & `title`**: Unique identifier and descriptive problem title.
-- **`story`**: Real-world logistics or domain context (e.g. logistics warehouse shipment adjustments).
-- **`problemStatement`**: Unambiguous DSA problem objective.
-- **`inputFormat` & `outputFormat`**: Exact standard input and output specifications.
-- **`constraints`**: Quantitative parameter bounds ($1 \le N \le 10^5$).
-- **`examples` & `edgeCases`**: Concrete input/output pairs and edge condition scenarios.
+The `QuestionSpecification` serves as the **authoritative source of truth** for problem-specific assessment validation, AI prompts, decision engine evaluations, test suite execution, and solution generation.
 
 ---
 
-## 3. Accepted Approaches (`AcceptedApproach`)
+## 2. Specification Status & Legacy Compatibility
 
-Defines all logically valid solutions for the problem. A problem may have multiple correct approaches:
+The backend distinguishes between validated assessment specifications and legacy compatibility items:
 
-- **Optimal Approach**: $O(N)$ linear scan with running max.
-- **Sub-optimal / Inefficient Approach**: $O(N^2)$ brute force pair range check (which is correct but inefficient).
+- **`VALIDATED`**: Specification passes all 18 cross-field validation rules via `QuestionSpecificationValidator`. Suitable for AI-assisted multi-step candidate assessment (e.g. `arr_01`).
+- **`LEGACY_UNVALIDATED`**: Questions lacking a complete validated specification (e.g. legacy questions in `questionBank.ts`). The adapter `QuestionSpecificationAdapter.ts` converts legacy questions into a compatibility shell marked `LEGACY_UNVALIDATED`.
+- **`INVALID` / `DRAFT`**: Specifications under construction or failing schema rules.
 
-Key Fields:
-- `correctness`: Must be `'CORRECT'`.
-- `optimal`: Boolean indicating whether this approach achieves optimal complexity.
-- `concepts`: Underlying DSA concepts (e.g., `["running sum", "global best sum"]`).
-- `correctnessConditions`: Explicit logical criteria required for the approach to be valid.
+> [!IMPORTANT]
+> Generic placeholder questions (e.g., statements like *"perform efficient computation using Arrays"*) are explicitly classified as `LEGACY_UNVALIDATED` and **cannot** be used for problem-specific AI validation until replaced with fully validated specifications.
 
 ---
 
-## 4. Validation Requirements (`ValidationRequirement`)
+## 3. Database Persistence (`prisma/schema.prisma`)
 
-Defines requirements for each reasoning step (Step 1 Understanding, Step 2 Plan, Step 3 Implementation):
+Specification data is stored non-destructively in SQLite via Prisma:
 
-- `critical`: Boolean indicating if failure to meet this requirement blocks step completion.
-- `category`: Domain category (`Objective`, `EdgeCases`, `Algorithm`, `Complexity`, `Implementation`).
-- `concepts`: Core semantic concepts expected in the candidate's explanation.
-- `acceptableEvidence`: Example phrases representing valid candidate reasoning.
-- `unacceptableEvidence`: Optional list of statements indicating misunderstanding.
+```prisma
+model Question {
+  id                      String   @id @default(uuid())
+  title                   String
+  story                   String
+  problemStatement        String
+  inputFormat             String
+  outputFormat            String
+  constraints             String
+  examples                String
+  difficulty              String
+  topic                   String
+  pattern                 String
+  expectedTimeComplexity  String
+  expectedSpaceComplexity String
+  timeLimit               Int      @default(2000)
+  memoryLimit             Int      @default(256)
+  starterCode             String
+  visibleTests            String
+  hiddenTests             String
+  edgeCases               String
+  tags                    String
+  specification           String?  @default("{}") // Full JSON QuestionSpecification
+  specificationVersion    Int      @default(1)
+  specificationStatus     String   @default("LEGACY_UNVALIDATED") // LEGACY_UNVALIDATED | VALIDATED | INVALID | DRAFT
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+  attempts                Attempt[]
+  sessions                AssessmentSession[]
+}
+```
 
 ---
 
-## 5. Complexity Contract (`ComplexityContract`)
+## 4. Multi-Layer Validation Pipeline
 
-Defines time and space complexity expectations:
-- `expectedTime` & `expectedSpace`: Target complexity (e.g. $O(N)$ time, $O(1)$ space).
-- `allowedTimeComplexities` & `allowedSpaceComplexities`: List of accepted complexity bounds.
-- `complexityJustification`: Technical reasoning explaining why the complexity bound is required.
+Validation is handled by specialized layers:
 
----
+```
+REAL QUESTION SPECIFICATION
+        ↓
+VALIDATION CONTRACT (QuestionSpecificationValidator)
+        ↓
+DETERMINISTIC VALIDATION (DeterministicValidator)
+        ↓
+SEMANTIC VALIDATION (SemanticValidator)
+        ↓
+CROSS-STEP CONSISTENCY (ConsistencyValidator)
+        ↓
+DECISION ENGINE (DecisionEngine)
+        ↓
+BACKEND STATE MACHINE (AssessmentStateMachine)
+        ↓
+CODE GENERATION & COMPILATION GUARD
+        ↓
+TEST EXECUTION & SUBMISSION
+```
 
-## 6. Consistency Contract (`ConsistencyContract`)
+### A. Deterministic Validator (`DeterministicValidator`)
+Handles non-empty checks, length thresholds, complexity parsing, and prohibited misunderstandings (e.g., selecting non-contiguous elements in subarray sum).
 
+### B. Semantic Validator (`SemanticValidator`)
+Evaluates semantic concept equivalence instead of exact string matching. For example:
+- Candidate says: *"maintain best subarray sum ending at current index"*
+- System matches: **Kadane's algorithm concept** without requiring exact name match.
+
+### C. Consistency Validator (`ConsistencyValidator`)
 Ensures cross-step logical alignment:
-- `step1ToStep2`: Validates that constraints and edge cases identified in Step 1 are addressed in Step 2 algorithm plan.
-- `step2ToStep3`: Validates that data structures and algorithm strategy in Step 3 match Step 2 proposal.
-- `step3ToCode`: Validates that generated Java code executes the reasoning outlined in Step 3.
+- **Step 1 → Step 2**: Validates edge cases identified in Step 1 are addressed in Step 2.
+- **Step 2 → Step 3**: Detects strategy and complexity mismatches (e.g., Step 2 specifies $O(1)$ space running sum, but Step 3 describes using an $O(N)$ HashMap).
+- **Step 3 → Code**: Verifies generated code matches implementation description.
+
+### D. Decision Engine (`DecisionEngine`)
+Returns a structured `ValidationEvaluationResult`:
+- `decision`: `'PASS'` | `'FAIL'` | `'CORRECT_BUT_INEFFICIENT'` | `'INCONSISTENT'` | `'INSUFFICIENT_EVIDENCE'`
+- `score`: Supporting info only (missing critical requirements block `PASS` regardless of score).
 
 ---
 
-## 7. Test Suite (`QuestionTestSuite`)
+## 5. Authoritative State Machine & Code Generation Guard
 
-Structured test cases categorized by type:
-- `examples`: Sample test cases displayed in problem statement.
-- `visible`: Tests runnable by candidate during Step 4 Testing.
-- `hidden`: Hidden test cases executed upon final Step 6 Submission.
-- `edge`: Specialized tests targeting boundary conditions (all negatives, single element, zeros).
+The `AssessmentStateMachine` enforces strict transition ordering:
+
+```
+PROBLEM_LOADED → UNDERSTANDING → UNDERSTANDING_REVIEW → PLAN → PLAN_REVIEW → IMPLEMENTATION → IMPLEMENTATION_REVIEW → CODE_GENERATING → CODE_READY → TESTING → DEBUGGING → SUBMITTING → EVALUATED → COMPLETED
+```
+
+### Code Generation Guard Policy:
+1. Candidate passes Step 3 Implementation & Cross-Step Consistency checks.
+2. Session transitions to `CODE_GENERATING`.
+3. AI generates code from reasoning prompts.
+4. Local JDK compiler compiles code. If compilation fails, status reverts to `IMPLEMENTATION_REVIEW` (does NOT become `CODE_READY`).
+5. Only upon successful compilation does session transition to `CODE_READY`.
 
 ---
 
-## 8. Reference Solution (`ReferenceSolution`)
+## 6. Test Suite Architecture
 
-Complete, executable reference Java code linked to an `approachId`, with complexity metadata and explanation.
+All test cases utilize standard `TestCase` schemas across 4 categories:
+- `examples`: Sample test cases shown in problem statement.
+- `visible`: Runnable by candidate during `TESTING` / `DEBUGGING`.
+- `hidden`: Hidden test cases executed upon final `SUBMITTING`.
+- `edge`: Boundary tests (all negative numbers, single element, zeros) executed during submission.
 
 ---
 
-## 9. Difference Between Keywords vs. Semantic Concepts
+## 7. Keywords vs. Semantic Concepts
 
 | Traditional Keyword Matching | Semantic Concept Model (This Specification) |
 | :--- | :--- |
 | Requires exact string `"Kadane"` | Accepts `"best subarray ending at current position"`, `"running sum"`, `"global best sum"` |
-| Fails if candidate calls it `"running max"` | Passes because semantic concept matches the underlying algorithm logic |
+| Fails if candidate calls it `"running max"` | Passes because semantic concept matches underlying algorithm logic |
 | Rigid and easily bypassed or failed | Robust, equitable evaluation of true candidate reasoning |
 
 ---
 
-## 10. Difference Between Correctness vs. Optimality
+## 8. Correctness vs. Optimality
 
-- **Correctness**: Whether the candidate's logic produces the correct output for all valid inputs without breaking bounds.
-- **Optimality**: Whether the candidate's approach achieves the best possible time and space complexity bounds ($O(N)$ vs $O(N^2)$).
+- **Correctness**: Whether candidate logic produces correct output for all valid inputs.
+- **Optimality**: Whether approach achieves optimal time/space complexity bounds ($O(N)$ vs $O(N^2)$).
 
-The `QuestionSpecification` explicitly models both optimal ($O(N)$) and correct-but-inefficient ($O(N^2)$) approaches so the simulator can reward correct reasoning while providing constructive feedback on efficiency.
+The `QuestionSpecification` models both optimal ($O(N)$) and correct-but-inefficient ($O(N^2)$) approaches, allowing the decision engine to output `CORRECT_BUT_INEFFICIENT` with constructive feedback.

@@ -1,5 +1,6 @@
 import { prisma } from '../database/db.js';
 import { questionService } from './QuestionService.js';
+import { questionSpecificationService } from './QuestionSpecificationService.js';
 import { executionService } from '../providers/execution/ExecutionService.js';
 import { aiService } from '../providers/ai/AIService.js';
 import { AssessmentStateMachine } from '../engine/AssessmentStateMachine.js';
@@ -8,6 +9,21 @@ import { AdaptiveDifficultyEngine } from '../engine/AdaptiveDifficultyEngine.js'
 import { AssessmentState, PracticeMode, ExecutionResult, UserSkillProfile, EvaluationBreakdown } from '../types/index.js';
 
 export class AssessmentService {
+  public async transitionSessionState(sessionId: string, nextState: AssessmentState): Promise<AssessmentState> {
+    const session = await prisma.assessmentSession.findUnique({ where: { id: sessionId } });
+    if (!session) throw new Error(`Session ${sessionId} not found`);
+
+    const currentState = session.state as AssessmentState;
+    AssessmentStateMachine.assertTransition(currentState, nextState);
+
+    await prisma.assessmentSession.update({
+      where: { id: sessionId },
+      data: { state: nextState },
+    });
+
+    return nextState;
+  }
+
   public async startSession(userId: string, questionId?: string, mode: PracticeMode = 'AI_ASSISTED'): Promise<any> {
     const user = await prisma.user.findFirst();
     const activeUserId = user ? user.id : userId;
@@ -65,10 +81,14 @@ export class AssessmentService {
     if (!session) throw new Error('Session not found');
 
     const formattedQ = questionService.formatQuestion(session.question);
+    const specification = await questionSpecificationService.getSpecificationByQuestionId(session.questionId);
+
     return {
       id: session.id,
       userId: session.userId,
       question: formattedQ,
+      specification,
+      isSpecificationValidated: specification?.specificationStatus === 'VALIDATED',
       mode: session.mode,
       state: session.state as AssessmentState,
       currentCode: session.currentCode,
@@ -92,9 +112,11 @@ export class AssessmentService {
     if (!s) throw new Error('Session not found');
 
     const q = questionService.formatQuestion(s.question);
-    const aiCtx = { question: q, phase: 'UNDERSTANDING', userPrompt: text };
+    const spec = await questionSpecificationService.getSpecificationByQuestionId(s.questionId);
 
-    const aiRes = await aiService.evaluateUnderstanding(aiCtx, text);
+    const aiCtx = { question: q, specification: spec || undefined, phase: 'UNDERSTANDING', userPrompt: text };
+
+    const aiRes = await aiService.evaluateUnderstanding(aiCtx, text, spec);
     const promptScore = aiRes.promptQuality?.score || (aiRes.status === 'approved' ? 8 : 4);
 
     await prisma.aIInteraction.create({
@@ -108,9 +130,14 @@ export class AssessmentService {
       },
     });
 
-    let newState: AssessmentState = 'UNDERSTANDING_REVIEW';
+    const currentState = s.state as AssessmentState;
+    if (currentState === 'PROBLEM_LOADED') {
+      await this.transitionSessionState(sessionId, 'UNDERSTANDING');
+    }
+
+    let nextState: AssessmentState = 'UNDERSTANDING_REVIEW';
     if (aiRes.status === 'approved') {
-      newState = 'PLAN';
+      nextState = 'PLAN';
     }
 
     await prisma.assessmentSession.update({
@@ -118,9 +145,10 @@ export class AssessmentService {
       data: {
         understandingText: text,
         promptQualityScore: promptScore,
-        state: newState,
       },
     });
+
+    await this.transitionSessionState(sessionId, nextState);
 
     return { session: await this.getSessionDetails(sessionId), aiResponse: aiRes };
   }
@@ -130,9 +158,17 @@ export class AssessmentService {
     if (!s) throw new Error('Session not found');
 
     const q = questionService.formatQuestion(s.question);
-    const aiCtx = { question: q, phase: 'PLAN', userPlan: planText };
+    const spec = await questionSpecificationService.getSpecificationByQuestionId(s.questionId);
 
-    const aiRes = await aiService.evaluatePlan(aiCtx, planText);
+    const aiCtx = {
+      question: q,
+      specification: spec || undefined,
+      phase: 'PLAN',
+      userPrompt: s.understandingText || undefined,
+      userPlan: planText,
+    };
+
+    const aiRes = await aiService.evaluatePlan(aiCtx, planText, spec);
     const planScore = aiRes.status === 'approved' ? 9 : 5;
 
     await prisma.aIInteraction.create({
@@ -146,9 +182,9 @@ export class AssessmentService {
       },
     });
 
-    let newState: AssessmentState = 'PLAN_REVIEW';
+    let nextState: AssessmentState = 'PLAN_REVIEW';
     if (aiRes.status === 'approved') {
-      newState = 'IMPLEMENTATION';
+      nextState = 'IMPLEMENTATION';
     }
 
     await prisma.assessmentSession.update({
@@ -156,9 +192,10 @@ export class AssessmentService {
       data: {
         planText,
         planQualityScore: planScore,
-        state: newState,
       },
     });
+
+    await this.transitionSessionState(sessionId, nextState);
 
     return { session: await this.getSessionDetails(sessionId), aiResponse: aiRes };
   }
@@ -168,15 +205,18 @@ export class AssessmentService {
     if (!s) throw new Error('Session not found');
 
     const q = questionService.formatQuestion(s.question);
+    const spec = await questionSpecificationService.getSpecificationByQuestionId(s.questionId);
+
     const aiCtx = {
       question: q,
+      specification: spec || undefined,
       phase: 'IMPLEMENTATION',
-      userPrompt: s.understandingText,
-      userPlan: s.planText,
+      userPrompt: s.understandingText || undefined,
+      userPlan: s.planText || undefined,
       userImplementation: text,
     };
 
-    const aiRes = await aiService.evaluateImplementation(aiCtx, text);
+    const aiRes = await aiService.evaluateImplementation(aiCtx, text, spec);
 
     await prisma.aIInteraction.create({
       data: {
@@ -189,14 +229,39 @@ export class AssessmentService {
       },
     });
 
-    let newState: AssessmentState = 'IMPLEMENTATION_REVIEW';
     let generatedCode = s.generatedCode || '';
 
     if (aiRes.status === 'approved') {
-      generatedCode = await aiService.generateCodeFromReasoning(aiCtx);
-      newState = 'CODE_READY';
+      // 1. Transition to CODE_GENERATING via state machine
+      await this.transitionSessionState(sessionId, 'CODE_GENERATING');
 
-      // Save version checkpoint for AI generated implementation
+      generatedCode = await aiService.generateCodeFromReasoning(aiCtx);
+
+      // 2. Validate compilation before setting CODE_READY
+      const compileCheck = await executionService.compileCode(generatedCode);
+      if (!compileCheck.success) {
+        // Fallback: Code generation failed compilation
+        await prisma.assessmentSession.update({
+          where: { id: sessionId },
+          data: {
+            implementationText: text,
+            state: 'IMPLEMENTATION_REVIEW',
+          },
+        });
+
+        return {
+          session: await this.getSessionDetails(sessionId),
+          aiResponse: {
+            type: 'code_generation',
+            status: 'needs_improvement',
+            feedback: `Generated code failed compilation: ${compileCheck.error || 'Syntax Error'}. Please refine your implementation steps.`,
+            missingItems: ['Valid compilable Java syntax in implementation prompt'],
+          },
+          generatedCode: '',
+        };
+      }
+
+      // 3. Save version checkpoint and transition to CODE_READY
       const versions = await prisma.codeVersion.count({ where: { sessionId } });
       await prisma.codeVersion.create({
         data: {
@@ -204,24 +269,30 @@ export class AssessmentService {
           versionNumber: versions + 1,
           code: generatedCode,
           action: 'AI Generated Implementation',
-          testSummary: 'Generated from candidate implementation prompt',
+          testSummary: 'Generated and compiled successfully from candidate implementation prompt',
         },
       });
-    }
 
-    await prisma.assessmentSession.update({
-      where: { id: sessionId },
-      data: {
-        implementationText: text,
-        generatedCode: generatedCode,
-        currentCode: generatedCode || s.currentCode,
-        state: newState,
-      },
-    });
+      await prisma.assessmentSession.update({
+        where: { id: sessionId },
+        data: {
+          implementationText: text,
+          generatedCode: generatedCode,
+          currentCode: generatedCode,
+        },
+      });
+
+      await this.transitionSessionState(sessionId, 'CODE_READY');
+    } else {
+      await prisma.assessmentSession.update({
+        where: { id: sessionId },
+        data: { implementationText: text },
+      });
+      await this.transitionSessionState(sessionId, 'IMPLEMENTATION_REVIEW');
+    }
 
     return { session: await this.getSessionDetails(sessionId), aiResponse: aiRes, generatedCode };
   }
-
 
   public async requestHint(sessionId: string): Promise<any> {
     const s = await prisma.assessmentSession.findUnique({ where: { id: sessionId }, include: { question: true } });
@@ -229,7 +300,9 @@ export class AssessmentService {
 
     const nextLevel = s.hintsUsed + 1;
     const q = questionService.formatQuestion(s.question);
-    const aiCtx = { question: q, phase: s.state, hintsUsed: s.hintsUsed };
+    const spec = await questionSpecificationService.getSpecificationByQuestionId(s.questionId);
+
+    const aiCtx = { question: q, specification: spec || undefined, phase: s.state, hintsUsed: s.hintsUsed };
 
     const aiRes = await aiService.generateHint(aiCtx, nextLevel);
 
@@ -258,26 +331,31 @@ export class AssessmentService {
 
     const currentState = s.state as AssessmentState;
     if (!AssessmentStateMachine.isCodeExecutionAllowed(currentState)) {
-      throw new Error(`Code execution rejected. Current phase is '${currentState}'. Complete Step 1 (Understand) and Step 2 (Plan) first.`);
+      throw new Error(`Code execution rejected. Current phase is '${currentState}'. Complete Step 1 (Understand), Step 2 (Plan), and Step 3 (Implement) first.`);
     }
 
     const q = questionService.formatQuestion(s.question);
+    const spec = await questionSpecificationService.getSpecificationByQuestionId(s.questionId);
+
+    const visibleTests = spec ? spec.tests.visible : q.visibleTests;
+
     const execRes: ExecutionResult = await executionService.runCode({
       code,
-      testCases: q.visibleTests,
+      testCases: visibleTests,
       timeLimitMs: q.timeLimit,
       memoryLimitMb: q.memoryLimit,
     });
 
-    const nextState: AssessmentState = execRes.success && execRes.passCount < execRes.totalCount ? 'DEBUGGING' : 'TESTING';
+    const targetState: AssessmentState = execRes.success && execRes.passCount < execRes.totalCount ? 'DEBUGGING' : 'TESTING';
 
     await prisma.assessmentSession.update({
       where: { id: sessionId },
-      data: {
-        currentCode: code,
-        state: nextState,
-      },
+      data: { currentCode: code },
     });
+
+    if (currentState === 'CODE_READY' || currentState === 'TESTING' || currentState === 'DEBUGGING') {
+      await this.transitionSessionState(sessionId, targetState);
+    }
 
     // Save version history
     const versions = await prisma.codeVersion.count({ where: { sessionId } });
@@ -300,11 +378,27 @@ export class AssessmentService {
 
     const currentState = s.state as AssessmentState;
     if (!AssessmentStateMachine.isCodeExecutionAllowed(currentState)) {
-      throw new Error(`Submission rejected. Current phase is '${currentState}'. Complete Step 1 (Understand) and Step 2 (Plan) first.`);
+      throw new Error(`Submission rejected. Current phase is '${currentState}'. Complete required reasoning steps first.`);
     }
 
+    // 1. Transition state to SUBMITTING via state machine
+    await this.transitionSessionState(sessionId, 'SUBMITTING');
+
     const q = questionService.formatQuestion(s.question);
-    const allTestCases = [...q.visibleTests, ...q.hiddenTests];
+    const spec = await questionSpecificationService.getSpecificationByQuestionId(s.questionId);
+
+    // Build comprehensive test suite (examples + visible + hidden + edge)
+    let allTestCases: any[] = [];
+    if (spec) {
+      allTestCases = [
+        ...spec.tests.examples,
+        ...spec.tests.visible,
+        ...spec.tests.hidden,
+        ...spec.tests.edge,
+      ];
+    } else {
+      allTestCases = [...q.visibleTests, ...q.hiddenTests];
+    }
 
     const execRes: ExecutionResult = await executionService.submitCode({
       code,
@@ -313,7 +407,6 @@ export class AssessmentService {
       memoryLimitMb: q.memoryLimit,
     });
 
-    let reasoningScoreBonus = s.solutionRevealed ? 0 : 1;
     const breakdown: EvaluationBreakdown = ScoringEngine.calculateScore(
       q,
       execRes,
@@ -383,11 +476,13 @@ export class AssessmentService {
       where: { id: sessionId },
       data: {
         currentCode: code,
-        state: 'EVALUATED',
         overallScore: breakdown.overallScore,
         evaluationReport: JSON.stringify(breakdown),
       },
     });
+
+    // Transition state to EVALUATED via state machine
+    await this.transitionSessionState(sessionId, 'EVALUATED');
 
     return {
       session: await this.getSessionDetails(sessionId),
@@ -398,6 +493,9 @@ export class AssessmentService {
   }
 
   public async markSolutionRevealed(sessionId: string): Promise<any> {
+    const s = await prisma.assessmentSession.findUnique({ where: { id: sessionId } });
+    if (!s) throw new Error('Session not found');
+
     await prisma.assessmentSession.update({
       where: { id: sessionId },
       data: { solutionRevealed: true },
@@ -407,3 +505,4 @@ export class AssessmentService {
 }
 
 export const assessmentService = new AssessmentService();
+

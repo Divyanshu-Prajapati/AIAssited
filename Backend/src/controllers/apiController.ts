@@ -114,8 +114,29 @@ export class ApiController {
     try {
       const { sessionId, action, userPrompt, code, confirmed } = req.body;
       const session = await assessmentService.getSessionDetails(sessionId);
+      const state = session.state;
+
+      // Backend State-Based Security Authorization
+      if (action === 'evaluate_understanding' && !['PROBLEM_LOADED', 'UNDERSTANDING', 'UNDERSTANDING_REVIEW'].includes(state)) {
+        res.status(403).json({ success: false, error: `Action '${action}' not authorized in phase '${state}'` });
+        return;
+      }
+      if (action === 'evaluate_plan' && !['PLAN', 'PLAN_REVIEW'].includes(state)) {
+        res.status(403).json({ success: false, error: `Action '${action}' not authorized in phase '${state}'` });
+        return;
+      }
+      if (action === 'evaluate_implementation' && !['IMPLEMENTATION', 'IMPLEMENTATION_REVIEW'].includes(state)) {
+        res.status(403).json({ success: false, error: `Action '${action}' not authorized in phase '${state}'` });
+        return;
+      }
+      if (action === 'debug' && !['CODE_READY', 'TESTING', 'DEBUGGING'].includes(state)) {
+        res.status(403).json({ success: false, error: `Action '${action}' not authorized in phase '${state}'` });
+        return;
+      }
+
       const ctx = {
         question: session.question,
+        specification: session.specification || undefined,
         phase: session.state,
         userPrompt,
         userPlan: session.planText,

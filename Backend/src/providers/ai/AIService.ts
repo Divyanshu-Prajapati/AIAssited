@@ -20,17 +20,20 @@ export class AIService {
     return { provider: this.ruleProvider, isOllama: false };
   }
 
-  public async evaluateUnderstanding(ctx: AIContext, text: string): Promise<AIResponse> {
+  public async evaluateUnderstanding(ctx: AIContext, text: string, specification?: any): Promise<AIResponse> {
+    if (specification) ctx.specification = specification;
     const { provider } = await this.getActiveProvider();
     return provider.evaluateUnderstanding(ctx, text);
   }
 
-  public async evaluatePlan(ctx: AIContext, planText: string): Promise<AIResponse> {
+  public async evaluatePlan(ctx: AIContext, planText: string, specification?: any): Promise<AIResponse> {
+    if (specification) ctx.specification = specification;
     const { provider } = await this.getActiveProvider();
     return provider.evaluatePlan(ctx, planText);
   }
 
-  public async evaluateImplementation(ctx: AIContext, implText: string): Promise<AIResponse> {
+  public async evaluateImplementation(ctx: AIContext, implText: string, specification?: any): Promise<AIResponse> {
+    if (specification) ctx.specification = specification;
     const { provider } = await this.getActiveProvider();
     return provider.evaluateImplementation(ctx, implText);
   }

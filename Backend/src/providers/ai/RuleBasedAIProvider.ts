@@ -1,5 +1,8 @@
 import { AIProvider, AIContext } from './AIProvider.js';
 import { AIResponse, PromptQualityAnalysis } from '../../types/index.js';
+import { legacyQuestionToSpec } from '../../utils/QuestionSpecificationAdapter.js';
+import { decisionEngine } from '../../validation/DecisionEngine.js';
+
 
 export class RuleBasedAIProvider implements AIProvider {
   public name = 'Rule-Based Practice AI';
@@ -98,133 +101,96 @@ export class RuleBasedAIProvider implements AIProvider {
 
   public async evaluateUnderstanding(ctx: AIContext, text: string): Promise<AIResponse> {
     const analysis = await this.reviewPrompt(ctx, text);
-    const missing: string[] = [];
+    const spec = ctx.specification || legacyQuestionToSpec(ctx.question);
 
-    const lower = text.toLowerCase();
-    if (!lower.includes('input')) missing.push('Input format & constraints');
-    if (!lower.includes('output')) missing.push('Expected output type/structure');
-    if (!lower.includes('edge') && !lower.includes('null') && !lower.includes('empty')) missing.push('Potential edge cases');
+    const valRes = decisionEngine.evaluateStep1(text, spec);
 
-    if (analysis.score < 5 || missing.length > 1) {
+    if (valRes.decision === 'FAIL' || valRes.decision === 'INSUFFICIENT_EVIDENCE') {
       return {
         type: 'explain',
         status: 'needs_improvement',
-        feedback: `Before proceeding to algorithm planning, please clarify:\n- ${missing.length > 0 ? missing.join('\n- ') : 'Detailed problem objective'}\n\n${analysis.feedback}`,
-        missingItems: missing,
+        feedback: `Understanding evaluation failed:\n${valRes.feedback}\n\n${valRes.criticalFailures.map((f) => `- ${f}`).join('\n')}`,
+        missingItems: valRes.missingRequirements,
         promptQuality: analysis,
-        nextSuggestedAction: 'Refine your problem understanding breakdown.',
+        nextSuggestedAction: 'Refine your problem understanding breakdown with required contract items.',
       };
     }
 
     return {
       type: 'explain',
       status: 'approved',
-      feedback: `Great understanding! You have identified the core input/output contract and key problem constraints.\n\nYou are now ready for STEP 2: DATA STRUCTURE & PLAN.`,
+      feedback: `Great understanding! You have identified the core input/output contract and key problem constraints.\n\n${valRes.feedback}\n\nYou are now ready for STEP 2: DATA STRUCTURE & PLAN.`,
       promptQuality: analysis,
       nextSuggestedAction: 'Click "Proceed to Plan" or write your algorithm proposal.',
     };
   }
 
   public async evaluatePlan(ctx: AIContext, planText: string): Promise<AIResponse> {
-    const lower = planText.toLowerCase();
-    const q = ctx.question;
-    const expectedPattern = q.pattern.toLowerCase();
-    const expectedDS = q.topic.toLowerCase();
+    const spec = ctx.specification || legacyQuestionToSpec(ctx.question);
+    const valRes = decisionEngine.evaluateStep2(planText, spec, { step1Text: ctx.userPrompt });
 
-    const mentionsPattern = lower.includes(expectedPattern) || lower.includes(q.topic.toLowerCase());
-    const mentionsComplexity = lower.includes('o(') || lower.includes('complexity') || lower.includes('time');
-
-    const missing: string[] = [];
-    if (!mentionsComplexity) missing.push('Explicit Time and Space Complexity Analysis');
-    if (!lower.includes('brute') && !lower.includes('approach') && !lower.includes('strategy')) {
-      missing.push('Clear algorithmic approach (Brute-force vs Optimized)');
-    }
-
-    if (missing.length > 0) {
+    if (valRes.decision === 'FAIL' || valRes.decision === 'INSUFFICIENT_EVIDENCE') {
       return {
         type: 'plan_review',
         status: 'needs_improvement',
-        feedback: `Your plan is on the right track, but incomplete. Please specify:\n- ${missing.join('\n- ')}`,
-        missingItems: missing,
-        nextSuggestedAction: 'Add complexity bounds and algorithm sequence.',
+        feedback: `Plan evaluation failed:\n${valRes.feedback}\n\n${valRes.criticalFailures.map((f) => `- ${f}`).join('\n')}`,
+        missingItems: valRes.missingRequirements,
+        nextSuggestedAction: 'Add complexity bounds and clear algorithm sequence matching problem requirements.',
       };
     }
 
-    let feedback = `Your plan is sound! You correctly outlined an approach using ${q.topic} with targeted pattern "${q.pattern}". Expected time complexity: ${q.expectedTimeComplexity}, space complexity: ${q.expectedSpaceComplexity}.`;
-    if (!mentionsPattern) {
-      feedback += `\n\nTip: Consider whether a ${q.topic}-based technique allows achieving ${q.expectedTimeComplexity}.`;
+    if (valRes.decision === 'CORRECT_BUT_INEFFICIENT') {
+      return {
+        type: 'plan_review',
+        status: 'approved',
+        feedback: `Your plan is correct but inefficient!\n${valRes.feedback}\n\nYou may proceed to implementation or refine your plan to an optimal approach.`,
+        nextSuggestedAction: 'Proceed to Step 3 or refine plan complexity.',
+      };
     }
 
     return {
       type: 'plan_review',
       status: 'approved',
-      feedback: `${feedback}\n\nYou are now unlocked for STEP 3: IMPLEMENTATION in Java!`,
-      nextSuggestedAction: 'Switch to the Java Editor and write your solution.',
+      feedback: `Optimal plan approved! ${valRes.feedback}\n\nYou are now unlocked for STEP 3: IMPLEMENTATION in Java!`,
+      nextSuggestedAction: 'Switch to the Java Editor and write your solution breakdown.',
     };
   }
 
   public async evaluateImplementation(ctx: AIContext, implText: string): Promise<AIResponse> {
-    const text = implText.trim().toLowerCase();
-    const planText = (ctx.userPlan || '').toLowerCase();
-    const missing: string[] = [];
+    const spec = ctx.specification || legacyQuestionToSpec(ctx.question);
+    const valRes = decisionEngine.evaluateStep3(implText, spec, { step2Text: ctx.userPlan });
 
-    if (text.length < 25) {
-      missing.push('Detailed step-by-step technical breakdown of algorithm logic');
-    }
-
-    if (!text.includes('input') && !text.includes('variable') && !text.includes('array') && !text.includes('scan') && !text.includes('read') && !text.includes('param') && !text.includes('init') && !text.includes('data')) {
-      missing.push('Input handling and state initialization setup');
-    }
-
-    if (!text.includes('loop') && !text.includes('iterat') && !text.includes('traverse') && !text.includes('pointer') && !text.includes('check') && !text.includes('process') && !text.includes('update') && !text.includes('return')) {
-      missing.push('Iteration control flow and state update logic');
-    }
-
-    // Consistency check against plan
-    if (planText) {
-      if ((planText.includes('two pointer') || planText.includes('pointer')) && text.includes('hashmap') && !planText.includes('hashmap')) {
-        return {
-          type: 'code_generation',
-          status: 'needs_improvement',
-          feedback: `Implementation approach mismatch! Your Step 2 Plan specified a Two Pointers strategy, but your Step 3 description references a HashMap. Please align your implementation reasoning with your approved Step 2 Plan.`,
-          missingItems: ['Approach consistency with Step 2 Plan'],
-          nextSuggestedAction: 'Align implementation description with your Two Pointers plan.',
-        };
-      }
-    }
-
-    if (missing.length > 0) {
+    if (valRes.decision === 'FAIL' || valRes.decision === 'INSUFFICIENT_EVIDENCE' || valRes.decision === 'INCONSISTENT') {
       return {
         type: 'code_generation',
         status: 'needs_improvement',
-        feedback: `Your implementation prompt requires additional technical details:\n- ${missing.join('\n- ')}`,
-        missingItems: missing,
-        nextSuggestedAction: 'Detail variable declarations, loop logic, and input handling.',
+        feedback: `Implementation evaluation failed:\n${valRes.feedback}\n\n${valRes.criticalFailures.map((f) => `- ${f}`).join('\n')}`,
+        missingItems: valRes.missingRequirements,
+        nextSuggestedAction: 'Detail variable declarations, loop logic, and align with your Step 2 plan.',
       };
     }
 
     return {
       type: 'code_generation',
       status: 'approved',
-      feedback: `Implementation reasoning approved! Your technical breakdown is consistent with your Step 2 Plan. Generating Java code matching your specified logic...`,
+      feedback: `Implementation reasoning approved! ${valRes.feedback} Generating Java code matching your specified logic...`,
       nextSuggestedAction: 'AI is generating solution code into Monaco Editor.',
     };
   }
 
   public async generateCodeFromReasoning(ctx: AIContext): Promise<string> {
-    const q = ctx.question;
-    const implText = ctx.userImplementation || 'Candidate approved implementation prompt';
+    const spec = ctx.specification;
+    if (spec && spec.referenceSolutions && spec.referenceSolutions.length > 0) {
+      const ref = spec.referenceSolutions.find((r) => r.approachId === 'kadane_linear_scan') || spec.referenceSolutions[0];
+      if (ref && ref.javaCode && ref.javaCode.trim().length > 0) {
+        return ref.javaCode;
+      }
+    }
 
-    if (q.id === 'arr_01') {
-      return `import java.util.*;
+    const q = ctx.question;
+    return `import java.util.*;
 import java.io.*;
 
-/**
- * AI Generated Implementation from Candidate Prompt
- * Problem: ${q.title}
- * Expected Time Complexity: ${q.expectedTimeComplexity}
- * Expected Space Complexity: ${q.expectedSpaceComplexity}
- */
 public class Main {
     public static void main(String[] args) {
         Scanner sc = new Scanner(System.in);
@@ -244,69 +210,6 @@ public class Main {
         }
         
         System.out.println(maxSoFar);
-    }
-}`;
-    }
-
-    if (q.id === 'arr_02') {
-      return `import java.util.*;
-import java.io.*;
-
-/**
- * AI Generated Implementation from Candidate Prompt
- * Problem: ${q.title}
- */
-public class Main {
-    public static void main(String[] args) {
-        Scanner sc = new Scanner(System.in);
-        if (!sc.hasNextInt()) return;
-        int n = sc.nextInt();
-        int[] nums = new int[n];
-        for (int i = 0; i < n; i++) {
-            nums[i] = sc.nextInt();
-        }
-        
-        int low = 0, high = n - 1;
-        while (low < high) {
-            int mid = low + (high - low) / 2;
-            if (nums[mid] > nums[mid + 1]) {
-                high = mid;
-            } else {
-                low = mid + 1;
-            }
-        }
-        
-        System.out.println(nums[low]);
-    }
-}`;
-    }
-
-    return `import java.util.*;
-import java.io.*;
-
-/**
- * AI Generated Implementation from Candidate Prompt:
- * "${implText.substring(0, 100)}..."
- * Time Complexity Target: ${q.expectedTimeComplexity}
- * Space Complexity Target: ${q.expectedSpaceComplexity}
- */
-public class Main {
-    public static void main(String[] args) {
-        Scanner sc = new Scanner(System.in);
-        if (!sc.hasNextInt()) return;
-        
-        int n = sc.nextInt();
-        int[] arr = new int[n];
-        for (int i = 0; i < n; i++) {
-            arr[i] = sc.nextInt();
-        }
-        
-        int result = 0;
-        for (int i = 0; i < n; i++) {
-            result += arr[i];
-        }
-        
-        System.out.println(result);
     }
 }`;
   }

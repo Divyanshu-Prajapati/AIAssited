@@ -174,4 +174,6 @@ export interface AIResponse {
 }
 
 export * from './QuestionSpecification.js';
+export * from './ValidationDecision.js';
+
 

@@ -58,38 +58,78 @@ Return valid JSON ONLY in this format:
     const isUp = await this.isAvailable();
     if (!isUp) return this.fallback.evaluateUnderstanding(ctx, text);
 
-    const promptQuality = await this.reviewPrompt(ctx, text);
-    if (promptQuality.score < 5) {
-      return {
-        type: 'explain',
-        status: 'needs_improvement',
-        feedback: `Your understanding breakdown needs higher technical specificity.\n\n${promptQuality.feedback}`,
-        promptQuality,
-        nextSuggestedAction: 'Refine input/output bounds and edge cases.',
-      };
-    }
+    const spec = ctx.specification;
+    const systemPrompt = `You are an AI assessment evaluator for problem "${ctx.question.title}".
+Specification Contract:
+- Requirements: ${JSON.stringify(spec?.validation.understanding.requirements || [])}
+- Prohibited Misunderstandings: ${JSON.stringify(spec?.validation.understanding.prohibitedMisunderstandings || [])}
 
-    return {
-      type: 'explain',
-      status: 'approved',
-      feedback: 'Excellent problem understanding! Constraints and input/output contracts are well defined. Proceed to STEP 2: PLAN.',
-      promptQuality,
-      nextSuggestedAction: 'Click "Proceed to Plan" or write your algorithm proposal.',
-    };
+Evaluate candidate response. Output strictly JSON:
+{
+  "decision": "PASS" | "FAIL" | "INSUFFICIENT_EVIDENCE",
+  "feedback": "string",
+  "criticalFailures": ["string"]
+}`;
+
+    try {
+      const llmRes = await this.queryOllama(systemPrompt, text);
+      const parsed = JSON.parse(llmRes);
+      if (parsed.decision === 'PASS') {
+        return {
+          type: 'explain',
+          status: 'approved',
+          feedback: parsed.feedback || 'Problem understanding approved.',
+          nextSuggestedAction: 'Proceed to Step 2 Plan.',
+        };
+      } else {
+        return {
+          type: 'explain',
+          status: 'needs_improvement',
+          feedback: parsed.feedback || 'Understanding response does not meet problem contract requirements.',
+          missingItems: parsed.criticalFailures || [],
+          nextSuggestedAction: 'Refine problem understanding.',
+        };
+      }
+    } catch {
+      return this.fallback.evaluateUnderstanding(ctx, text);
+    }
   }
 
   public async evaluatePlan(ctx: AIContext, planText: string): Promise<AIResponse> {
     const isUp = await this.isAvailable();
     if (!isUp) return this.fallback.evaluatePlan(ctx, planText);
 
-    const systemPrompt = `Evaluate this algorithm plan for DSA problem "${ctx.question.title}" (Topic: ${ctx.question.topic}, Pattern: ${ctx.question.pattern}).
-Do NOT write code. Check if brute force, optimized approach, data structure, and complexity are stated.
-Return JSON: { "type": "plan_review", "status": "approved" | "needs_improvement", "feedback": "string", "missingItems": ["item1"] }`;
+    const spec = ctx.specification;
+    const systemPrompt = `Evaluate this algorithm plan for "${ctx.question.title}".
+Accepted Approaches: ${JSON.stringify(spec?.acceptedApproaches || [])}
+Complexity Contract: Time ${spec?.validation.plan.complexity.expectedTime}, Space ${spec?.validation.plan.complexity.expectedSpace}
+
+Output strictly JSON:
+{
+  "decision": "PASS" | "CORRECT_BUT_INEFFICIENT" | "FAIL" | "INSUFFICIENT_EVIDENCE",
+  "feedback": "string",
+  "criticalFailures": ["string"]
+}`;
 
     try {
       const llmRes = await this.queryOllama(systemPrompt, planText);
       const parsed = JSON.parse(llmRes);
-      return parsed;
+      if (parsed.decision === 'PASS' || parsed.decision === 'CORRECT_BUT_INEFFICIENT') {
+        return {
+          type: 'plan_review',
+          status: 'approved',
+          feedback: parsed.feedback || 'Algorithm plan approved.',
+          nextSuggestedAction: 'Proceed to Step 3 Implementation.',
+        };
+      } else {
+        return {
+          type: 'plan_review',
+          status: 'needs_improvement',
+          feedback: parsed.feedback || 'Plan does not satisfy complexity or approach requirements.',
+          missingItems: parsed.criticalFailures || [],
+          nextSuggestedAction: 'Refine plan requirements.',
+        };
+      }
     } catch {
       return this.fallback.evaluatePlan(ctx, planText);
     }
@@ -99,14 +139,37 @@ Return JSON: { "type": "plan_review", "status": "approved" | "needs_improvement"
     const isUp = await this.isAvailable();
     if (!isUp) return this.fallback.evaluateImplementation(ctx, implText);
 
-    const systemPrompt = `Evaluate this implementation prompt for DSA problem "${ctx.question.title}".
-Check if candidate details input parsing, variables, loop logic, and alignment with their Step 2 Plan ("${ctx.userPlan || ''}").
-Return JSON ONLY: { "type": "code_generation", "status": "approved" | "needs_improvement", "feedback": "string", "missingItems": ["item1"] }`;
+    const spec = ctx.specification;
+    const systemPrompt = `Evaluate this implementation logic for "${ctx.question.title}".
+Candidate Step 2 Plan: "${ctx.userPlan || ''}"
+Required Stages: ${JSON.stringify(spec?.validation.implementation.requiredImplementationStages || [])}
+
+Output strictly JSON:
+{
+  "decision": "PASS" | "INCONSISTENT" | "FAIL",
+  "feedback": "string",
+  "criticalFailures": ["string"]
+}`;
 
     try {
       const llmRes = await this.queryOllama(systemPrompt, implText);
       const parsed = JSON.parse(llmRes);
-      return parsed;
+      if (parsed.decision === 'PASS') {
+        return {
+          type: 'code_generation',
+          status: 'approved',
+          feedback: parsed.feedback || 'Implementation reasoning approved.',
+          nextSuggestedAction: 'AI generating code into Monaco Editor.',
+        };
+      } else {
+        return {
+          type: 'code_generation',
+          status: 'needs_improvement',
+          feedback: parsed.feedback || 'Implementation breakdown is incomplete or inconsistent with Step 2.',
+          missingItems: parsed.criticalFailures || [],
+          nextSuggestedAction: 'Detail variable setup, control flow, and align with plan.',
+        };
+      }
     } catch {
       return this.fallback.evaluateImplementation(ctx, implText);
     }

@@ -1,4 +1,6 @@
-import { DSATopic } from './index.js';
+import { DSATopic, Difficulty } from './index.js';
+
+export type SpecificationStatus = 'LEGACY_UNVALIDATED' | 'VALIDATED' | 'INVALID' | 'DRAFT';
 
 export interface Example {
   input: string;
@@ -23,7 +25,7 @@ export interface ProblemDefinition {
   constraints: string[];
   examples: Example[];
   edgeCases: EdgeCase[];
-  difficulty: 'Easy' | 'Medium' | 'Hard' | 'EASY' | 'MEDIUM' | 'HARD';
+  difficulty: Difficulty;
   topic: DSATopic;
   pattern: string;
   expectedTimeComplexity: string;
@@ -68,7 +70,7 @@ export interface UnderstandingContract {
 
 export interface PlanContract {
   requirements: ValidationRequirement[];
-  acceptedApproaches: AcceptedApproach[];
+  acceptedApproaches: string[]; // Approach IDs referencing top-level acceptedApproaches
   complexity: ComplexityContract;
   allowCorrectButInefficient: boolean;
 }
@@ -117,6 +119,8 @@ export interface ReferenceSolution {
 }
 
 export interface QuestionSpecification {
+  specificationStatus: SpecificationStatus;
+  specificationVersion: number;
   problem: ProblemDefinition;
   acceptedApproaches: AcceptedApproach[];
   validation: ValidationContract;

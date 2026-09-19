@@ -40,6 +40,9 @@ model Question {
   hiddenTests             String
   edgeCases               String
   tags                    String
+  specification           String?             @default("{}")
+  specificationVersion    Int                 @default(1)
+  specificationStatus     String              @default("LEGACY_UNVALIDATED")
   createdAt               DateTime            @default(now())
   updatedAt               DateTime            @updatedAt
   attempts                Attempt[]

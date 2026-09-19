@@ -49,6 +49,12 @@ export function specToLegacyQuestion(spec: QuestionSpecification): QuestionData 
   };
 }
 
+/**
+ * COMPATIBILITY ADAPTER ONLY.
+ * Converts a legacy QuestionData object into a QuestionSpecification interface for backward compatibility.
+ * IMPORTANT: Sets specificationStatus to 'LEGACY_UNVALIDATED'.
+ * A legacy QuestionData object must NEVER automatically become 'VALIDATED'.
+ */
 export function legacyQuestionToSpec(legacy: QuestionData): QuestionSpecification {
   const visibleTests = (legacy.visibleTests || []).map((t) => ({
     id: t.id,
@@ -85,6 +91,9 @@ export function legacyQuestionToSpec(legacy: QuestionData): QuestionSpecificatio
   };
 
   return {
+    specificationStatus: 'LEGACY_UNVALIDATED',
+    specificationVersion: 1,
+
     problem: {
       id: legacy.id,
       title: legacy.title,
@@ -99,7 +108,7 @@ export function legacyQuestionToSpec(legacy: QuestionData): QuestionSpecificatio
         input: '',
         expectedOutput: '',
       })),
-      difficulty: legacy.difficulty as any,
+      difficulty: (legacy.difficulty as any) || 'EASY',
       topic: legacy.topic,
       pattern: legacy.pattern,
       expectedTimeComplexity: legacy.expectedTimeComplexity,
@@ -119,7 +128,7 @@ export function legacyQuestionToSpec(legacy: QuestionData): QuestionSpecificatio
           },
         ],
         minimumEdgeCases: 1,
-        prohibitedMisunderstandings: [],
+        prohibitedMisunderstandings: ['Generic misunderstanding placeholder'],
       },
       plan: {
         requirements: [
@@ -132,7 +141,7 @@ export function legacyQuestionToSpec(legacy: QuestionData): QuestionSpecificatio
             acceptableEvidence: [legacy.pattern],
           },
         ],
-        acceptedApproaches: [defaultApproach],
+        acceptedApproaches: ['primary_approach'],
         complexity: {
           expectedTime: legacy.expectedTimeComplexity,
           expectedSpace: legacy.expectedSpaceComplexity,

@@ -11,6 +11,8 @@
     "db:generate": "prisma generate",
     "db:seed": "tsx src/seed/seedRunner.ts",
     "validate:question-schema": "tsx src/scripts/validateQuestionSchema.ts",
+    "validate:question-bank": "tsx src/scripts/validateQuestionBank.ts",
+    "validate:all": "tsc --noEmit && tsx src/scripts/validateQuestionSchema.ts && tsx src/scripts/validateQuestionBank.ts && tsx src/test/runTests.ts",
     "test": "tsx src/test/runTests.ts"
   },
   "dependencies": {
