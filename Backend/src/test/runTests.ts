@@ -57,6 +57,12 @@ public class Main {
   console.assert(scoreBreakdown.overallScore > 0, 'Score should be > 0');
   console.log(`✅ Scoring Engine passed: Score calculated as ${scoreBreakdown.overallScore}/10 (${scoreBreakdown.status}).\n`);
 
+  // 5. Question Specification Schema Verification
+  console.log('5️⃣ Testing QuestionSpecification Schema & Validation Rules...');
+  const { runQuestionSpecificationTests } = await import('./questionSpecification.test.js');
+  runQuestionSpecificationTests();
+  console.log('✅ QuestionSpecification Schema tests passed.\n');
+
   console.log('🎉 ALL INTEGRATION TESTS PASSED CLEANLY!');
 }
 

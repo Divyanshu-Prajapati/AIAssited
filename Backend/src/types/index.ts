@@ -172,3 +172,6 @@ export interface AIResponse {
   explanationText?: string;
   codeGenerationAllowed?: boolean;
 }
+
+export * from './QuestionSpecification.js';
+

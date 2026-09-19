@@ -10,6 +10,7 @@
     "db:push": "prisma db push",
     "db:generate": "prisma generate",
     "db:seed": "tsx src/seed/seedRunner.ts",
+    "validate:question-schema": "tsx src/scripts/validateQuestionSchema.ts",
     "test": "tsx src/test/runTests.ts"
   },
   "dependencies": {
